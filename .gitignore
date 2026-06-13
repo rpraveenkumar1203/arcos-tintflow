@@ -1,0 +1,8 @@
+# Rust build artifacts
+/target
+
+# Secrets — never commit
+.env
+
+# Logs
+*.log

@@ -1,0 +1,37 @@
+[package]
+name = "tintflow"
+version = "0.1.0"
+edition = "2021"
+description = "TintFlow — independent workflow automation service (scheduling, webhooks, approvals, execution logs, templates)"
+license = "MIT"
+
+# Independent service: its own crate, its own PostgreSQL database. Not part of
+# the `arcos` package — builds and deploys on its own.
+[[bin]]
+name = "tintflow"
+path = "src/main.rs"
+
+[dependencies]
+tokio      = { version = "1",    features = ["full"] }
+axum       = { version = "0.8" }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+serde      = { version = "1",    features = ["derive"] }
+serde_json = "1"
+sqlx       = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "migrate", "json"] }
+reqwest    = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+tracing    = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid       = { version = "1", features = ["v4"] }
+chrono     = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror  = "2"
+async-nats = "0.38"
+prometheus = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3
