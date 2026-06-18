@@ -1,5 +1,10 @@
 FROM rust:1-slim-bookworm AS builder
 
+# Limit codegen/linker parallelism to keep peak CPU+RAM low (avoids
+# stressing the Snapdragon/Hyper-V hypervisor into a HYPERVISOR_ERROR).
+ARG CARGO_BUILD_JOBS=1
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         libssl-dev \
