@@ -21,13 +21,7 @@ RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && cargo build --release &
 COPY src ./src
 RUN find src -name "*.rs" | xargs touch && cargo build --release
 
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libssl3 \
-        libgcc-s1 \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian12
 
 WORKDIR /app
 COPY --from=builder /app/target/release/tintflow /app/tintflow
