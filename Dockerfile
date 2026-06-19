@@ -3,7 +3,10 @@ FROM rust:1-slim-bookworm AS builder
 # Limit codegen/linker parallelism to keep peak CPU+RAM low (avoids
 # stressing the Snapdragon/Hyper-V hypervisor into a HYPERVISOR_ERROR).
 ARG CARGO_BUILD_JOBS=1
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+    CARGO_HTTP_TIMEOUT=600 \
+    CARGO_NET_RETRY=10 \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
@@ -14,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Cache dependencies: build with a stub main first.
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
 
