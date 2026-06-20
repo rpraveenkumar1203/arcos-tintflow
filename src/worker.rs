@@ -49,36 +49,60 @@ pub fn spawn(db: Arc<Db>) {
         }
     });
 
-    // Claim/execute loop. A permit is reserved BEFORE claiming so a run is
+    // Claim/execute loop. Permits are reserved BEFORE claiming so a run is
     // never claimed (lease ticking) without capacity to execute it.
     tokio::spawn(async move {
         let gate = Arc::new(Semaphore::new(MAX_CONCURRENT));
         loop {
-            let permit = match Arc::clone(&gate).acquire_owned().await {
+            let first_permit = match Arc::clone(&gate).acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => return, // semaphore closed — shutting down
             };
 
-            let claimed = db
-                .claim_due_runs(&worker_id, now_secs(), engine::LEASE_SECS, 1)
-                .await;
-            match claimed {
-                Ok(mut runs) if !runs.is_empty() => {
-                    let mut run = runs.remove(0);
-                    let db = Arc::clone(&db);
-                    tokio::spawn(async move {
-                        let _permit = permit; // held for the run's lifetime
-                        if let Err(e) = engine::execute_claimed(&db, &mut run).await {
-                            tracing::error!(run = %run.id, error = %e, "run execution failed to persist");
-                        }
-                    });
-                    // More work may be due — claim again right away.
-                    continue;
+            let extra = gate.available_permits();
+            let mut permits = vec![first_permit];
+            for _ in 0..extra {
+                if let Ok(p) = Arc::clone(&gate).try_acquire_owned() {
+                    permits.push(p);
                 }
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "claiming runs failed"),
             }
-            drop(permit);
+            let limit = permits.len();
+
+            let claimed = db
+                .claim_due_runs(&worker_id, now_secs(), engine::LEASE_SECS, limit as i64)
+                .await;
+                
+            match claimed {
+                Ok(runs) => {
+                    let claimed_count = runs.len();
+                    
+                    // Return unused permits immediately
+                    while permits.len() > claimed_count {
+                        drop(permits.pop());
+                    }
+                    
+                    for mut run in runs {
+                        let db = Arc::clone(&db);
+                        let _permit = permits.pop().unwrap(); // Give the task ownership of the permit
+                        tokio::spawn(async move {
+                            if let Err(e) = engine::execute_claimed(&db, &mut run).await {
+                                tracing::error!(run = %run.id, error = %e, "run execution failed to persist");
+                            }
+                            drop(_permit);
+                        });
+                    }
+                    
+                    if claimed_count > 0 {
+                        // More work may be due — claim again right away.
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "claiming runs failed");
+                    drop(permits); // return them on error
+                }
+            }
+            
             tokio::select! {
                 _ = WAKE.notified() => {}
                 _ = tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)) => {}

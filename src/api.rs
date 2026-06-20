@@ -38,6 +38,7 @@ pub fn router(db: Arc<Db>) -> Router {
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/runs/{id}/retry", post(retry_run))
+        .route("/runs/{id}/context", axum::routing::patch(patch_run_context))
         .route("/hooks/{token}", post(trigger_webhook))
         .route("/approvals", get(list_approvals))
         .route("/approvals/{id}", get(get_approval).post(resolve_approval))
@@ -104,9 +105,18 @@ async fn delete_workflow(State(db): State<Arc<Db>>, headers: HeaderMap, Path(id)
 // ── Runs ──────────────────────────────────────────────────────────────────
 async fn run_workflow(State(db): State<Arc<Db>>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult<Run> {
     let t = tenant(&headers);
+    if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
+        if let Ok(Some(existing)) = db.get_run_by_idempotency_key(&t, key).await {
+            return Ok(Json(existing));
+        }
+    }
+
     let wf = db.get_workflow(&t, &id).await.map_err(e500)?
         .ok_or((StatusCode::NOT_FOUND, "workflow not found".into()))?;
-    let run = scheduler::new_run(&wf, "manual");
+    let mut run = scheduler::new_run(&wf, "manual");
+    if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
+        run.idempotency_key = Some(key.to_string());
+    }
     db.create_run(&run).await.map_err(e500)?;
     metrics::RUNS_TOTAL.inc();
     // Enqueued durably; the worker executes it. Clients poll GET /runs/{id}.
@@ -177,6 +187,25 @@ async fn get_run(State(db): State<Arc<Db>>, headers: HeaderMap, Path(id): Path<S
         .ok_or((StatusCode::NOT_FOUND, "run not found".into()))?;
     let steps = db.list_run_steps(&run.id).await.map_err(e500)?;
     Ok(Json(RunDetail { run, steps }))
+}
+
+#[derive(Deserialize)]
+pub struct PatchContext {
+    pub context: serde_json::Value,
+}
+
+async fn patch_run_context(State(db): State<Arc<Db>>, headers: HeaderMap, Path(id): Path<String>, Json(b): Json<PatchContext>) -> ApiResult<Run> {
+    let t = tenant(&headers);
+    let mut run = db.get_run(&t, &id).await.map_err(e500)?
+        .ok_or((StatusCode::NOT_FOUND, "run not found".into()))?;
+        
+    if run.status != run_status::DEAD_LETTER {
+        return Err((StatusCode::CONFLICT, "only dead_letter runs can be edited".into()));
+    }
+    
+    run.context = b.context;
+    db.save_run_progress(&run).await.map_err(e500)?;
+    Ok(Json(run))
 }
 
 // ── Webhooks ────────────────────────────────────────────────────────────────

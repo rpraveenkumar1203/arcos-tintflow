@@ -41,9 +41,12 @@ fn default_version() -> i32 { 1 }
 pub mod run_status {
     pub const QUEUED: &str = "queued";
     pub const RUNNING: &str = "running";
+    /// Run is waiting for a delay to elapse.
+    pub const SLEEPING: &str = "sleeping";
     /// A step failed but attempts remain; requeued with backoff.
     pub const RETRYING: &str = "retrying";
     pub const WAITING_APPROVAL: &str = "waiting_approval";
+    pub const WAITING_SUBWORKFLOW: &str = "waiting_subworkflow";
     pub const SUCCEEDED: &str = "succeeded";
     pub const FAILED: &str = "failed";
     /// Retries exhausted — parked for operator inspection / manual retry.
@@ -73,6 +76,8 @@ pub struct Run {
     pub cursor: i32,
     pub context: serde_json::Value,
     pub error: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     /// Retry bookkeeping: how many executions have been attempted, the cap,
     /// and when the run is next eligible for claiming.
     #[serde(default)]

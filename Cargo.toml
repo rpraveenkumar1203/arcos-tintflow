@@ -26,6 +26,7 @@ chrono     = { version = "0.4", default-features = false, features = ["clock"] }
 thiserror  = "2"
 async-nats = "0.38"
 prometheus = { version = "0.14", default-features = false }
+rhai = { version = "1.25.1", features = ["serde", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"

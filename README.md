@@ -26,7 +26,7 @@ cargo run --manifest-path services/tintflow/Cargo.toml
 Or use the complete stack:
 
 ```powershell
-docker compose -f docker-compose.microservices.yml up -d --build tintflow
+docker compose -f docker-compose.yml up -d --build tintflow
 ```
 
 ## API

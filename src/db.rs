@@ -78,16 +78,23 @@ impl Db {
     pub async fn create_run(&self, r: &Run) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO runs (id, workflow_id, tenant_id, status, trigger, cursor, context, created_at,
-                               attempt, max_attempts, next_attempt_at, steps, workflow_version)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                               attempt, max_attempts, next_attempt_at, steps, workflow_version, idempotency_key)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
         )
         .bind(&r.id).bind(&r.workflow_id).bind(&r.tenant_id).bind(&r.status)
         .bind(&r.trigger).bind(r.cursor).bind(&r.context).bind(r.created_at)
         .bind(r.attempt).bind(r.max_attempts).bind(r.next_attempt_at)
         .bind(r.steps.as_ref().map(serde_json::to_value).transpose()?)
         .bind(r.workflow_version)
+        .bind(&r.idempotency_key)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn get_run_by_idempotency_key(&self, tenant_id: &str, idempotency_key: &str) -> Result<Option<Run>, DbError> {
+        let row = sqlx::query("SELECT * FROM runs WHERE tenant_id=$1 AND idempotency_key=$2")
+            .bind(tenant_id).bind(idempotency_key).fetch_optional(&self.pool).await?;
+        Ok(row.map(run_from_row))
     }
 
     pub async fn get_run(&self, tenant_id: &str, id: &str) -> Result<Option<Run>, DbError> {
@@ -136,7 +143,7 @@ impl Db {
                              started_at = COALESCE(started_at, $3)
              WHERE id IN (
                  SELECT id FROM runs
-                 WHERE status IN ('queued','retrying') AND next_attempt_at <= $3
+                 WHERE status IN ('queued','retrying','sleeping') AND next_attempt_at <= $3
                  ORDER BY next_attempt_at, created_at
                  LIMIT $4
                  FOR UPDATE SKIP LOCKED
@@ -149,11 +156,11 @@ impl Db {
     }
 
     /// Extend the lease on a running run (called between steps so a healthy
-    /// worker is never reaped mid-run).
-    pub async fn extend_lease(&self, run_id: &str, lease_until: i64) -> Result<(), DbError> {
-        sqlx::query("UPDATE runs SET lease_until=$2 WHERE id=$1 AND status='running'")
-            .bind(run_id).bind(lease_until).execute(&self.pool).await?;
-        Ok(())
+    /// worker is never reaped mid-run). Returns true if cancellation was requested.
+    pub async fn extend_lease(&self, run_id: &str, lease_until: i64) -> Result<bool, DbError> {
+        let row = sqlx::query("UPDATE runs SET lease_until=$2 WHERE id=$1 AND status='running' RETURNING cancel_requested")
+            .bind(run_id).bind(lease_until).fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| r.get::<bool, _>("cancel_requested")).unwrap_or(false))
     }
 
     /// Requeue (or dead-letter) runs whose worker disappeared: status is
@@ -183,11 +190,11 @@ impl Db {
         let row = sqlx::query(
             "UPDATE runs SET
                  cancel_requested = TRUE,
-                 status = CASE WHEN status IN ('queued','retrying','waiting_approval') THEN 'canceled' ELSE status END,
-                 error  = CASE WHEN status IN ('queued','retrying','waiting_approval') THEN 'canceled by user' ELSE error END,
-                 finished_at = CASE WHEN status IN ('queued','retrying','waiting_approval') THEN $3 ELSE finished_at END
+                 status = CASE WHEN status IN ('queued','retrying','waiting_approval','sleeping','waiting_subworkflow') THEN 'canceled' ELSE status END,
+                 error  = CASE WHEN status IN ('queued','retrying','waiting_approval','sleeping','waiting_subworkflow') THEN 'canceled by user' ELSE error END,
+                 finished_at = CASE WHEN status IN ('queued','retrying','waiting_approval','sleeping','waiting_subworkflow') THEN $3 ELSE finished_at END
              WHERE id=$1 AND tenant_id=$2
-               AND status IN ('queued','retrying','waiting_approval','running')
+               AND status IN ('queued','retrying','waiting_approval','running','sleeping','waiting_subworkflow')
              RETURNING *",
         )
         .bind(id).bind(tenant_id).bind(now)
@@ -216,12 +223,7 @@ impl Db {
         Ok(row.map(run_from_row))
     }
 
-    /// Whether cancellation has been requested (engine checks between steps).
-    pub async fn cancel_requested(&self, run_id: &str) -> Result<bool, DbError> {
-        let row = sqlx::query("SELECT cancel_requested FROM runs WHERE id=$1")
-            .bind(run_id).fetch_optional(&self.pool).await?;
-        Ok(row.map(|r| r.get::<bool, _>("cancel_requested")).unwrap_or(false))
-    }
+
 
     pub async fn insert_run_step(&self, s: &RunStep) -> Result<(), DbError> {
         sqlx::query(
@@ -394,6 +396,7 @@ fn run_from_row(r: sqlx::postgres::PgRow) -> Run {
         cursor: r.get("cursor"),
         context: r.get("context"),
         error: r.get("error"),
+        idempotency_key: r.get("idempotency_key"),
         attempt: r.get("attempt"),
         max_attempts: r.get("max_attempts"),
         next_attempt_at: r.get("next_attempt_at"),

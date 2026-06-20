@@ -66,6 +66,7 @@ pub fn new_run(wf: &Workflow, trigger: &str) -> Run {
         cursor: 0,
         context: serde_json::json!({}),
         error: None,
+        idempotency_key: None,
         attempt: 0,
         max_attempts: 3,
         next_attempt_at: 0,
